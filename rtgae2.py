@@ -2,55 +2,6 @@ import torch
 import tree
 import tree_grammar
 import numpy as np
-
-class SimpleGRU(torch.nn.Module):
-    """ A easier-to-use version of the gated recurrent unit (Cho et al., 2014).
-
-    Attributes
-    ----------
-    _dim_in: int
-        The input dimensionality.
-    _dim_hid: int
-        The state dimensionality.
-    _gru: class torch.nn.GRU
-        The actual GRU network.
-
-    """
-    def __init__(self, dim_in, dim_hid):
-        super(SimpleGRU, self).__init__()
-        self._dim_in = dim_in
-        self._dim_hid = dim_hid
-        self._gru = torch.nn.GRU(self._dim_in, self._dim_hid)
-
-    def forward(self, x, h = None):
-        """ Updates the state given the current state and the current input.
-
-        Parameters
-        ----------
-        x: class torch.Tensor
-            The current input with dimensionality self._dim_in
-        h: class torch.Tensor (default = zero vector)
-            The current state with dimensionality self._dim_hid.
-
-        Returns
-        -------
-        h: class torch.Tensor
-            The next state with dimensionality self._dim_hid, computed as
-            described above.
-
-        """
-        # fill state with zeros if not given
-        if h is None:
-            h = torch.zeros(self._dim_hid)
-        # extend with empty dimensions
-        h = h.unsqueeze(0).unsqueeze(1)
-        # extend x with empty dimensions
-        x = x.unsqueeze(0).unsqueeze(1)
-        # compute the next state
-        _, h = self._gru(x, h)
-        # return it
-        return h.squeeze(1).squeeze(0)
-
 class RTGAE(torch.nn.Module):
     """ An autoencoder for trees over a given grammar.
 
@@ -81,14 +32,14 @@ class RTGAE(torch.nn.Module):
             self.symbol_to_idx_[symbols[i]] = i
 
         # set up a GRU to encode siblings
-        self.enc_siblings_ = torch.nn.GRU(self.dim, self.dim)
+        self.enc_siblings_ = torch.nn.LSTM(self.dim, self.dim)
         # set up a GRU to encode to parents
-        self.enc_parents_  = SimpleGRU(len(symbols), self.dim)
+        self.enc_parents_  = SimpleLSTM(len(symbols), self.dim)
         # set up a GRU to decode siblings
-        self.dec_siblings_ = SimpleGRU(self.dim, self.dim)
+        self.dec_siblings_ = SimpleLSTM(self.dim, self.dim)
         self.dec_siblings_out_ = torch.nn.Linear(self.dim, self.dim)
         # set up a GRU to decode from parents
-        self.dec_parents_  = SimpleGRU(len(symbols), self.dim)
+        self.dec_parents_  = SimpleLSTM(len(symbols), self.dim)
         # set up linear layers to decide which grammar rule to take
         # from a given nonterminal symbol
         self.dec_cls_ = torch.nn.ModuleDict()
@@ -125,7 +76,7 @@ class RTGAE(torch.nn.Module):
             H_child = torch.zeros(len(x._children), self.dim)
             for k in range(len(x._children)):
                 H_child[k, :] = self.encode(x._children[k])
-            _, h_child = self.enc_siblings_(H_child.unsqueeze(1))
+            _, (h_child,_) = self.enc_siblings_(H_child.unsqueeze(1))
             h_child = h_child.squeeze(1).squeeze(0)
         # then, encode to a parent representation
         label_encoding = torch.zeros(len(self.symbol_to_idx_))
@@ -347,13 +298,16 @@ class RTGAE(torch.nn.Module):
         self.decode_forced_(h, nont, seq, 0, scores)
         # transform the actual score list and the desired chosen rules
         # into torch tensors
-        score_acc = scores.copy()
-        pred_seq = []
-        for score in score_acc:
-          pred_seq.append(int(np.argmax(score.detach().numpy())))
         scores = torch.nn.utils.rnn.pad_sequence(scores, True)
         seq    = torch.tensor(seq, dtype=torch.long)
         # compute crossentropy loss
         loss = torch.nn.functional.cross_entropy(scores, seq, reduction = 'sum')
         # return it
-        return loss, seq, pred_seq
+        return loss
+
+
+    def forward(self, x):
+        encoded = self.encode(x)
+        decoded = self.decode(encoded)
+        return decoded
+    
